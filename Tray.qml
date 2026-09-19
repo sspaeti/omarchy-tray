@@ -45,6 +45,59 @@ BarWidget {
   // Master switch for status-notifier icons: off removes them all from the
   // drawer (they stay listed in the manage popup for when it comes back on).
   readonly property bool showTrayIcons: settings.showTrayIcons !== false
+
+  // Where hosted widgets' components come from. A trusted host (first-party
+  // bar, or a full-bar plugin) exposes the registry straight on `bar`. A
+  // third-party bar widget only gets a PluginBarApi facade without one, so
+  // the shell's injection into our own service (Service.qml) is the fallback.
+  // The service may finish loading after this widget does and `serviceFor`
+  // is a plain call with nothing to bind to, so it is polled until found.
+  readonly property string pluginId: "io.github.tyrichards.tray"
+  readonly property string home: Quickshell.env("HOME")
+  readonly property string omarchyConfigDir: home + "/.config/omarchy"
+  property var trayService: null
+  readonly property var widgetRegistry: {
+    var direct = root.bar ? root.bar.barWidgetRegistry : null
+    if (direct) return direct
+    return trayService && trayService.barWidgetRegistry ? trayService.barWidgetRegistry : null
+  }
+
+  function resolveTrayService() {
+    var shell = root.bar ? root.bar.shell : null
+    if (!shell || typeof shell.serviceFor !== "function") return null
+    var found = null
+    try { found = shell.serviceFor(root.pluginId) } catch (e) { found = null }
+    return found && found.barWidgetRegistry ? found : null
+  }
+
+  onBarChanged: {
+    syncLayoutSnapshot()
+    trayService = resolveTrayService()
+    if (!trayService) serviceProbe.restart()
+  }
+  Component.onCompleted: if (!trayService) serviceProbe.restart()
+
+  Timer {
+    id: serviceProbe
+    interval: 250
+    repeat: true
+    // ~30s of retries covers a cold shell start where services land last.
+    property int attempts: 0
+    onTriggered: {
+      attempts++
+      var found = root.resolveTrayService()
+      if (found) {
+        root.trayService = found
+        stop()
+        attempts = 0
+      } else if (attempts >= 120) {
+        stop()
+        attempts = 0
+        console.warn("io.github.tyrichards.tray: no widget registry reachable; hosted widgets cannot render")
+      }
+    }
+  }
+
   // One user-arranged order across BOTH kinds of drawer content: hosted
   // widget ids and status-notifier item ids share the token list, so icons
   // and plugin widgets interleave freely. Missing tokens keep arrival order
@@ -798,9 +851,32 @@ BarWidget {
     return hiddenIds.indexOf(iid) !== -1 ? "hidden" : "drawer"
   }
 
-  function ownedByOmarchy(item) {
+  // `bar.layoutConfig` on the plugin facade is replaced with a fresh deep copy
+  // on every bar-side sync, which happens whenever any widget registers a
+  // click target. Hosted widgets do exactly that from Component.onCompleted,
+  // i.e. while the drawer model that created them is still notifying, so a
+  // binding in that model which reads layoutConfig re-dirties itself
+  // mid-notify: a binding loop. Track the layout by content instead, so the
+  // model only re-evaluates when the layout actually changes.
+  property var layoutSnapshot: null
+  property string layoutSnapshotKey: ""
+
+  function syncLayoutSnapshot() {
     var layout = root.bar && root.bar.layoutConfig ? root.bar.layoutConfig : null
-    return TrayModel.ownedByOmarchy(item, layout)
+    var key = layout ? JSON.stringify(layout) : ""
+    if (key === layoutSnapshotKey) return
+    layoutSnapshotKey = key
+    layoutSnapshot = layout
+  }
+
+  Connections {
+    target: root.bar
+    ignoreUnknownSignals: true
+    function onLayoutConfigChanged() { root.syncLayoutSnapshot() }
+  }
+
+  function ownedByOmarchy(item) {
+    return TrayModel.ownedByOmarchy(item, root.layoutSnapshot)
   }
 
   function bucket(category) {
@@ -1636,13 +1712,16 @@ BarWidget {
     readonly property string widgetId: TrayModel.entryId(entry)
     readonly property var widgetSettings: TrayModel.entrySettings(entry)
     readonly property string customType: root.bar && typeof root.bar.customModuleType === "function"
-      ? String(root.bar.customModuleType(entry) || "") : ""
+      ? String(root.bar.customModuleType(entry) || "") : TrayModel.customModuleType(entry)
     readonly property var registryComponent: {
       if (customType) return null
-      var registry = root.bar ? root.bar.barWidgetRegistry : null
+      var registry = root.widgetRegistry
       if (!registry) return null
+      // Reading `revision` and `widgets` creates the binding dependency so a
+      // registry mutation (plugin enabled, component reloaded) re-resolves.
       var revision = registry.revision
-      var record = registry.widgets[widgetId]
+      var widgets = registry.widgets || {}
+      var record = widgets[widgetId]
       return record ? record.component : null
     }
     readonly property var activeItem: {
@@ -1690,8 +1769,12 @@ BarWidget {
     Loader {
       id: qmlLoader
       active: hostedRoot.customType === "qml"
-      source: active && root.bar && typeof root.bar.customModuleSource === "function"
-        ? root.bar.customModuleSource(hostedRoot.entry) : ""
+      source: {
+        if (!active) return ""
+        if (root.bar && typeof root.bar.customModuleSource === "function")
+          return root.bar.customModuleSource(hostedRoot.entry)
+        return TrayModel.fileUrl(TrayModel.customModulePath(hostedRoot.entry, root.home, root.omarchyConfigDir))
+      }
       anchors.fill: parent
       onLoaded: {
         hostedRoot.injectProps()

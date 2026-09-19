@@ -91,6 +91,50 @@ function wrapperId(wrapper) {
   return wrapper.entry ? entryId(wrapper.entry) : entryId(wrapper)
 }
 
+// --- Custom module support --------------------------------------------------
+// The bar exposes customModuleType / customModuleSource only on its trusted
+// root object; third-party widgets get a facade without them. These mirror
+// BarModel.js so exec- and source-based modules can still be hosted.
+
+function customModuleType(entry) {
+  var settings = entrySettings(entry)
+  var type = String(settings.type || "")
+  if (type) return type
+  if (settings.exec) return "command"
+  if (settings.source) return "qml"
+  return ""
+}
+
+function expandPath(path, home) {
+  var value = String(path || "")
+  if (value === "~") return String(home || "")
+  if (value.indexOf("~/") === 0) return String(home || "") + value.slice(1)
+  return value
+}
+
+// Only a bare module name may be resolved under bar/modules/; anything with a
+// path separator or parent reference is refused rather than guessed at.
+function customModuleSafeName(name) {
+  var value = String(name || "")
+  return value !== "" && value.indexOf("/") === -1 && value.indexOf("..") === -1
+}
+
+function customModulePath(entry, home, configDir) {
+  var settings = entrySettings(entry)
+  var name = entryId(entry)
+  var source = settings.source ? expandPath(settings.source, home) : ""
+  if (!source && customModuleSafeName(name))
+    source = String(configDir || "") + "/bar/modules/" + String(name) + ".qml"
+  return source
+}
+
+function fileUrl(path) {
+  var value = String(path || "")
+  if (!value) return ""
+  if (value.indexOf("file://") === 0) return value
+  return "file://" + value
+}
+
 // The shell loads a third-party plugin's widget component only while its id
 // is referenced in shell.json (bar.id, a bar.layout entry, or plugins[]).
 // A captured widget's id lives inside the tray's settings, which that scan

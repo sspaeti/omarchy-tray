@@ -40,6 +40,12 @@ By hand: in `~/.config/omarchy/shell.json`, change the bar layout entry
 `{ "id": "omarchy.tray" }` to `{ "id": "io.github.tyrichards.tray" }`.
 The shell hot-reloads on save.
 
+Then run `omarchy restart shell` once. The plugin ships a headless service
+(`Service.qml`) alongside the widget, and Qt caches a plugin directory's file
+listing when the shell starts, so a freshly added service file is not picked
+up by hot reload alone. The same applies after upgrading from a version
+without the service.
+
 For the smoothest reveal animation, keep the tray at the **inner edge** of its
 section (first entry of `right`, or last of `left`): the drawer then expands
 into the bar's empty middle without pushing its neighbours around.
@@ -100,6 +106,15 @@ background when the bar is opaque, with a translucent tint when it is
 transparent), so the two never fight for pixels or clicks.
 
 ![Vertical bar: drawer, dimmed center, and manage popup](demo-vertical.gif)
+
+## How hosted widgets get their component
+
+omarchy-shell hands a third-party bar widget a capability facade as its
+`bar`, and that facade carries no `barWidgetRegistry`. A plugin *service*,
+however, does get the registry injected. So the tray registers a no-op
+service whose only job is to hold that registry, and the widget reads it
+back through `bar.shell.serviceFor(...)`. On a trusted host (the first-party
+bar, or a full-bar plugin) the registry is taken straight from `bar` instead.
 
 ## Notes and limitations
 
